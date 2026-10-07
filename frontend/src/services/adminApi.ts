@@ -211,11 +211,28 @@ export const adminApi = {
     return res.json();
   },
 
+  async deleteWorker(id: string) {
+    const headers = await authHeaders();
+    const res = await fetch(`${API_BASE}/workers/${id}`, {
+      method: 'DELETE',
+      headers
+    });
+    if (!res.ok) throw new Error((await res.json()).error || 'Failed to delete worker');
+    return res.json();
+  },
+
   // Departments
   async getDepartments() {
     const headers = await authHeaders();
     const res = await fetch(`${API_BASE}/departments`, { headers });
     if (!res.ok) throw new Error((await res.json()).error || 'Failed to load departments');
+    return res.json();
+  },
+
+  async getDepartment(id: string) {
+    const headers = await authHeaders();
+    const res = await fetch(`${API_BASE}/departments/${id}`, { headers });
+    if (!res.ok) throw new Error((await res.json()).error || 'Failed to load department details');
     return res.json();
   },
 
@@ -227,6 +244,27 @@ export const adminApi = {
       body: JSON.stringify(data)
     });
     if (!res.ok) throw new Error((await res.json()).error || 'Failed to create department');
+    return res.json();
+  },
+
+  async updateDepartment(id: string, data: any) {
+    const headers = await authHeaders();
+    const res = await fetch(`${API_BASE}/departments/${id}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error((await res.json()).error || 'Failed to update department');
+    return res.json();
+  },
+
+  async deleteDepartment(id: string) {
+    const headers = await authHeaders();
+    const res = await fetch(`${API_BASE}/departments/${id}`, {
+      method: 'DELETE',
+      headers
+    });
+    if (!res.ok) throw new Error((await res.json()).error || 'Failed to delete department');
     return res.json();
   },
 

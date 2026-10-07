@@ -1134,23 +1134,70 @@ router.post('/workers', adminAuthMiddleware, async (req: any, res: any) => {
 router.patch('/workers/:id', adminAuthMiddleware, async (req: any, res: any) => {
   try {
     const { id } = req.params;
-    const { department_id, status } = req.body;
+    const { department_id, status, full_name, phone_number } = req.body;
 
     const updates: any = {};
     if (department_id) updates.department_id = department_id;
     if (status) updates.status = status;
 
-    const { data, error } = await supabase
-      .from('workers')
-      .update(updates)
-      .eq('profile_id', id)
-      .select()
-      .single();
+    let workerData = null;
+    if (Object.keys(updates).length > 0) {
+      const { data, error } = await supabase
+        .from('workers')
+        .update(updates)
+        .eq('profile_id', id)
+        .select()
+        .single();
 
-    if (error) throw error;
-    res.json({ success: true, worker: data });
+      if (error) throw error;
+      workerData = data;
+    }
+
+    if (full_name !== undefined || phone_number !== undefined) {
+      const profileUpdates: any = {};
+      if (full_name !== undefined) profileUpdates.full_name = full_name;
+      if (phone_number !== undefined) profileUpdates.phone_number = phone_number || null;
+      await supabase.from('profiles').update(profileUpdates).eq('id', id);
+    }
+
+    res.json({ success: true, worker: workerData });
   } catch (error: any) {
     console.error('Error updating worker:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/workers/:id', adminAuthMiddleware, async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+
+    // Check if worker has active tasks
+    const { data: activeIssues } = await supabase
+      .from('issues')
+      .select('id, code, title')
+      .eq('assigned_worker_id', id)
+      .in('status', ['ASSIGNED', 'ACCEPTED', 'IN_PROGRESS']);
+
+    if (activeIssues && activeIssues.length > 0) {
+      return res.status(400).json({
+        error: `Cannot remove worker: This worker has ${activeIssues.length} active assignment(s) in progress. Please reassign their tasks before removing.`
+      });
+    }
+
+    // Delete worker record from workers table
+    const { error: wErr } = await supabase
+      .from('workers')
+      .delete()
+      .eq('profile_id', id);
+
+    if (wErr) throw wErr;
+
+    // Revert profile role to CITIZEN to preserve user integrity
+    await supabase.from('profiles').update({ role: 'CITIZEN' }).eq('id', id);
+
+    res.json({ success: true, message: 'Worker removed successfully' });
+  } catch (error: any) {
+    console.error('Error removing worker:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1160,23 +1207,51 @@ router.patch('/workers/:id', adminAuthMiddleware, async (req: any, res: any) => 
 // ==========================================
 router.get('/departments', adminAuthMiddleware, async (req: any, res: any) => {
   try {
-    const { data: departments, error: dErr } = await supabase.from('departments').select('*');
+    const { data: departments, error: dErr } = await supabase
+      .from('departments')
+      .select('*')
+      .order('name', { ascending: true });
     if (dErr) throw dErr;
 
-    const { data: allIssues } = await supabase.from('issues').select('id, department_id, status, severity');
+    const { data: allWorkers } = await supabase
+      .from('workers')
+      .select('profile_id, department_id, status');
+    const workers = allWorkers || [];
+
+    const { data: allIssues } = await supabase
+      .from('issues')
+      .select('id, department_id, assigned_worker_id, status, severity, created_at, updated_at');
     const issues = allIssues || [];
 
     const enrichedDepts = (departments || []).map(dept => {
-      const deptIssues = issues.filter(i => i.department_id === dept.id);
+      const deptWorkers = workers.filter(w => w.department_id === dept.id);
+      const totalWorkers = deptWorkers.length;
+      const activeWorkers = deptWorkers.filter(w => w.status !== 'OFF_DUTY').length;
+      const inactiveWorkers = deptWorkers.filter(w => w.status === 'OFF_DUTY').length;
+
+      const deptWorkerIds = new Set(deptWorkers.map(w => w.profile_id));
+      const deptIssues = issues.filter(
+        i => i.department_id === dept.id || (i.assigned_worker_id && deptWorkerIds.has(i.assigned_worker_id))
+      );
+
       const total = deptIssues.length;
-      const inProgress = deptIssues.filter(i => i.status === 'IN_PROGRESS' || i.status === 'ASSIGNED').length;
-      const resolved = deptIssues.filter(i => i.status === 'RESOLVED' || i.status === 'CLOSED').length;
+      const inProgress = deptIssues.filter(i => ['IN_PROGRESS', 'ASSIGNED', 'ACCEPTED'].includes(i.status)).length;
+      const resolved = deptIssues.filter(i => ['RESOLVED', 'CLOSED'].includes(i.status)).length;
       const critical = deptIssues.filter(i => (i.severity || '').toUpperCase() === 'CRITICAL').length;
-      const compliance = total > 0 ? Math.round((resolved / total) * 100) : 100;
+      
+      const slaList = deptIssues.map(i => calculateSLA(i));
+      const onTrackOrMet = slaList.filter(s => ['ON_TRACK', 'RESOLVED_WITHIN_SLA'].includes(s.status)).length;
+      const compliance = total > 0 ? Math.round((onTrackOrMet / total) * 100) : 100;
 
       return {
         ...dept,
+        totalWorkers,
+        activeWorkers,
+        inactiveWorkers,
         stats: {
+          totalWorkers,
+          activeWorkers,
+          inactiveWorkers,
           total,
           inProgress,
           resolved,
@@ -1193,14 +1268,198 @@ router.get('/departments', adminAuthMiddleware, async (req: any, res: any) => {
   }
 });
 
+router.get('/departments/:id', adminAuthMiddleware, async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+
+    // 1. Fetch department
+    const { data: dept, error: dErr } = await supabase
+      .from('departments')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (dErr || !dept) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+
+    // 2. Fetch workers in this department
+    const { data: deptWorkersData } = await supabase
+      .from('workers')
+      .select('*')
+      .eq('department_id', id);
+
+    const deptWorkers = deptWorkersData || [];
+    const workerProfileIds = deptWorkers.map(w => w.profile_id);
+
+    // 3. Fetch worker profiles
+    const profileMap = new Map();
+    if (workerProfileIds.length > 0) {
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('*')
+        .in('id', workerProfileIds);
+      (profiles || []).forEach(p => profileMap.set(p.id, p));
+    }
+
+    // 4. Fetch auth emails for workers
+    const userMap = new Map();
+    try {
+      const { data: authUsers } = await supabase.auth.admin.listUsers();
+      (authUsers?.users || []).forEach(u => userMap.set(u.id, u.email));
+    } catch (e) {
+      console.warn('Error fetching auth users:', e);
+    }
+
+    // 5. Fetch all issues assigned to department or assigned to its workers
+    const { data: allDeptIssues } = await supabase
+      .from('issues')
+      .select(`
+        id, code, title, description, category, subcategory, severity, priority, status,
+        created_at, updated_at, department_id, assigned_worker_id, latitude, longitude, address,
+        assigned_worker:assigned_worker_id(
+          profile:profile_id(full_name)
+        )
+      `)
+      .order('created_at', { ascending: false });
+
+    const workerIdSet = new Set(workerProfileIds);
+    const deptIssues = (allDeptIssues || []).filter(
+      i => i.department_id === id || (i.assigned_worker_id && workerIdSet.has(i.assigned_worker_id))
+    );
+
+    // 6. Enrich issues with real SLA
+    const issuesWithSla = deptIssues.map(i => ({
+      ...i,
+      worker_name: (i.assigned_worker as any)?.profile?.full_name || (profileMap.get(i.assigned_worker_id)?.full_name) || null,
+      sla: calculateSLA(i)
+    }));
+
+    // 7. Calculate Task Statistics
+    const totalAssignedTasks = deptIssues.length;
+    const pending = deptIssues.filter(i => ['REPORTED', 'VERIFIED'].includes(i.status)).length;
+    const assigned = deptIssues.filter(i => i.status === 'ASSIGNED').length;
+    const accepted = deptIssues.filter(i => i.status === 'ACCEPTED').length;
+    const inProgress = deptIssues.filter(i => i.status === 'IN_PROGRESS').length;
+    const citizenVerification = deptIssues.filter(i => i.status === 'CITIZEN_VERIFICATION').length;
+    const resolved = deptIssues.filter(i => i.status === 'RESOLVED').length;
+    const closed = deptIssues.filter(i => i.status === 'CLOSED').length;
+    const reopened = deptIssues.filter(i => i.status === 'REOPENED').length;
+    const completedTotal = resolved + closed;
+    const completionRate = totalAssignedTasks > 0 ? Math.round((completedTotal / totalAssignedTasks) * 100) : 0;
+
+    // 8. Calculate SLA Statistics
+    const onTrack = issuesWithSla.filter(i => i.sla.status === 'ON_TRACK').length;
+    const dueSoon = issuesWithSla.filter(i => i.sla.status === 'DUE_SOON').length;
+    const breached = issuesWithSla.filter(i => i.sla.status === 'BREACHED').length;
+    const resolvedWithin = issuesWithSla.filter(i => i.sla.status === 'RESOLVED_WITHIN_SLA').length;
+    const resolvedAfter = issuesWithSla.filter(i => i.sla.status === 'RESOLVED_AFTER_SLA').length;
+    const compliantCount = onTrack + resolvedWithin;
+    const slaCompliance = totalAssignedTasks > 0 ? Math.round((compliantCount / totalAssignedTasks) * 100) : 100;
+
+    // 9. Enriched Worker List
+    const enrichedWorkers = deptWorkers.map(w => {
+      const prof = profileMap.get(w.profile_id);
+      const wIssues = deptIssues.filter(i => i.assigned_worker_id === w.profile_id);
+      const activeCount = wIssues.filter(i => ['ASSIGNED', 'ACCEPTED', 'IN_PROGRESS'].includes(i.status)).length;
+      const resolvedCount = wIssues.filter(i => ['RESOLVED', 'CLOSED'].includes(i.status)).length;
+      const score = resolvedCount > 0 ? Math.min(100, Math.round(85 + (resolvedCount * 2))) : 90;
+
+      return {
+        profile_id: w.profile_id,
+        full_name: prof?.full_name || 'Worker',
+        email: userMap.get(w.profile_id) || 'worker@civicconnect.com',
+        phone_number: prof?.phone_number || null,
+        status: w.status,
+        created_at: w.created_at,
+        activeTasks: activeCount,
+        completedTasks: resolvedCount,
+        performanceScore: score
+      };
+    });
+
+    // 10. Worker Statistics
+    const totalWorkers = deptWorkers.length;
+    const activeWorkers = deptWorkers.filter(w => w.status !== 'OFF_DUTY').length;
+    const inactiveWorkers = deptWorkers.filter(w => w.status === 'OFF_DUTY').length;
+    const availableWorkers = deptWorkers.filter(w => w.status === 'AVAILABLE').length;
+    const busyWorkers = deptWorkers.filter(w => w.status === 'BUSY').length;
+
+    // 11. Analytics Aggregations
+    const byStatus: Record<string, number> = {};
+    const bySeverity: Record<string, number> = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+    deptIssues.forEach(i => {
+      byStatus[i.status] = (byStatus[i.status] || 0) + 1;
+      const sev = (i.severity || 'MEDIUM').toUpperCase();
+      bySeverity[sev] = (bySeverity[sev] || 0) + 1;
+    });
+
+    // Recent 7 days trend
+    const recentTrend: { date: string; reported: number; resolved: number }[] = [];
+    for (let dayOffset = 6; dayOffset >= 0; dayOffset--) {
+      const d = new Date();
+      d.setDate(d.getDate() - dayOffset);
+      const dateStr = d.toISOString().split('T')[0];
+      const reportedOnDay = deptIssues.filter(i => i.created_at && i.created_at.startsWith(dateStr)).length;
+      const resolvedOnDay = deptIssues.filter(i => ['RESOLVED', 'CLOSED'].includes(i.status) && i.updated_at && i.updated_at.startsWith(dateStr)).length;
+      recentTrend.push({
+        date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        reported: reportedOnDay,
+        resolved: resolvedOnDay
+      });
+    }
+
+    res.json({
+      department: dept,
+      statistics: {
+        totalWorkers,
+        activeWorkers,
+        inactiveWorkers,
+        availableWorkers,
+        busyWorkers,
+        totalAssignedTasks,
+        pending,
+        assigned,
+        accepted,
+        inProgress,
+        citizenVerification,
+        resolved,
+        closed,
+        reopened,
+        completionRate
+      },
+      workers: enrichedWorkers,
+      recentTasks: issuesWithSla.slice(0, 20),
+      sla: {
+        complianceRate: slaCompliance,
+        onTrack,
+        dueSoon,
+        breached,
+        resolvedWithin,
+        resolvedAfter
+      },
+      analytics: {
+        byStatus,
+        bySeverity,
+        completionRate,
+        slaCompliance,
+        recentTrend
+      }
+    });
+  } catch (error: any) {
+    console.error('Error fetching department details:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 router.post('/departments', adminAuthMiddleware, async (req: any, res: any) => {
   try {
     const { name, description } = req.body;
-    if (!name) return res.status(400).json({ error: 'Department name is required' });
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Department name is required' });
 
     const { data, error } = await supabase
       .from('departments')
-      .insert({ name, description: description || null })
+      .insert({ name: name.trim(), description: description ? description.trim() : null })
       .select()
       .single();
 
@@ -1208,6 +1467,70 @@ router.post('/departments', adminAuthMiddleware, async (req: any, res: any) => {
     res.status(201).json({ success: true, department: data });
   } catch (error: any) {
     console.error('Error creating department:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put('/departments/:id', adminAuthMiddleware, async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+    const { name, description } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Department name is required' });
+
+    const { data, error } = await supabase
+      .from('departments')
+      .update({
+        name: name.trim(),
+        description: description !== undefined ? (description ? description.trim() : null) : null
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.json({ success: true, department: data });
+  } catch (error: any) {
+    console.error('Error updating department:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/departments/:id', adminAuthMiddleware, async (req: any, res: any) => {
+  try {
+    const { id } = req.params;
+
+    // Check associated workers
+    const { data: workers } = await supabase
+      .from('workers')
+      .select('profile_id')
+      .eq('department_id', id);
+
+    // Check active issues
+    const { data: activeIssues } = await supabase
+      .from('issues')
+      .select('id, code')
+      .eq('department_id', id)
+      .not('status', 'in', '("RESOLVED","CLOSED")');
+
+    const workerCount = workers?.length || 0;
+    const activeIssueCount = activeIssues?.length || 0;
+
+    if (workerCount > 0 || activeIssueCount > 0) {
+      return res.status(400).json({
+        error: `Cannot delete department: This department has ${workerCount} worker(s) and ${activeIssueCount} active assignment(s). Please reassign or resolve these records before deleting.`
+      });
+    }
+
+    const { error: delErr } = await supabase
+      .from('departments')
+      .delete()
+      .eq('id', id);
+
+    if (delErr) throw delErr;
+
+    res.json({ success: true, message: 'Department deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting department:', error);
     res.status(500).json({ error: error.message });
   }
 });

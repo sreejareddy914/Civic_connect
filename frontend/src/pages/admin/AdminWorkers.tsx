@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { 
   Loader2, 
   UserPlus, 
@@ -8,25 +9,40 @@ import {
   Briefcase,
   Phone,
   Mail,
-  RefreshCw
+  RefreshCw,
+  Edit2,
+  Trash2,
+  Filter
 } from 'lucide-react';
 import { adminApi } from '../../services/adminApi';
+import { supabase } from '../../lib/supabase';
 
 export default function AdminWorkers() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedDeptFilter = searchParams.get('department') || 'ALL';
+
   const [workers, setWorkers] = useState<any[]>([]);
   const [departments, setDepartments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Add Worker Form state
   const [showAddModal, setShowAddModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-
-  // New Worker Form
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('worker123');
   const [phone, setPhone] = useState('');
   const [deptId, setDeptId] = useState('');
 
-  const fetchData = async () => {
+  // Edit / Reassign Worker Form state
+  const [editWorker, setEditWorker] = useState<any | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editDeptId, setEditDeptId] = useState('');
+  const [editStatus, setEditStatus] = useState('AVAILABLE');
+  const [updating, setUpdating] = useState(false);
+
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       const [wRes, dRes] = await Promise.all([
@@ -35,7 +51,7 @@ export default function AdminWorkers() {
       ]);
       setWorkers(wRes.workers || []);
       setDepartments(dRes.departments || []);
-      if (dRes.departments && dRes.departments.length > 0) {
+      if (dRes.departments && dRes.departments.length > 0 && !deptId) {
         setDeptId(dRes.departments[0].id);
       }
     } catch (error) {
@@ -43,11 +59,26 @@ export default function AdminWorkers() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [deptId]);
 
   useEffect(() => {
     fetchData();
-  }, []);
+
+    // Real-time synchronization
+    const channel = supabase
+      .channel('admin-workers-page')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'workers' }, () => {
+        fetchData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'departments' }, () => {
+        fetchData();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchData]);
 
   const handleAddWorker = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,10 +86,10 @@ export default function AdminWorkers() {
     setSubmitting(true);
     try {
       await adminApi.createWorker({
-        full_name: fullName,
-        email,
+        full_name: fullName.trim(),
+        email: email.trim(),
         password,
-        phone_number: phone || null,
+        phone_number: phone.trim() || null,
         department_id: deptId
       });
       setShowAddModal(false);
@@ -73,6 +104,26 @@ export default function AdminWorkers() {
     }
   };
 
+  const handleEditWorker = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editWorker || !editDeptId) return alert('Please fill in required fields');
+    setUpdating(true);
+    try {
+      await adminApi.updateWorker(editWorker.profile_id, {
+        department_id: editDeptId,
+        status: editStatus,
+        full_name: editName.trim(),
+        phone_number: editPhone.trim() || null
+      });
+      setEditWorker(null);
+      await fetchData();
+    } catch (err: any) {
+      alert(`Error updating worker: ${err.message}`);
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   const handleStatusChange = async (workerId: string, newStatus: string) => {
     try {
       await adminApi.updateWorker(workerId, { status: newStatus });
@@ -81,6 +132,22 @@ export default function AdminWorkers() {
       alert(`Error updating status: ${err.message}`);
     }
   };
+
+  const handleDeleteWorker = async (worker: any) => {
+    if (!window.confirm(`Are you sure you want to remove worker "${worker.full_name}"?`)) {
+      return;
+    }
+    try {
+      await adminApi.deleteWorker(worker.profile_id);
+      await fetchData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to remove worker');
+    }
+  };
+
+  const filteredWorkers = selectedDeptFilter === 'ALL'
+    ? workers
+    : workers.filter(w => w.department_id === selectedDeptFilter);
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8">
@@ -93,13 +160,16 @@ export default function AdminWorkers() {
             </span>
           </div>
           <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">Worker Management</h1>
-          <p className="text-gray-500 text-sm mt-0.5">Manage municipal field technicians, monitor active tasks, and balance department workloads.</p>
+          <p className="text-gray-500 text-sm mt-0.5">
+            Manage municipal field technicians, monitor active tasks, and balance department workloads.
+          </p>
         </div>
 
         <div className="flex items-center gap-3">
           <button 
             onClick={fetchData}
             className="p-2.5 bg-white text-gray-700 border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors shadow-sm"
+            title="Refresh Workers"
           >
             <RefreshCw className="h-4 w-4" />
           </button>
@@ -149,18 +219,63 @@ export default function AdminWorkers() {
         </div>
       </div>
 
+      {/* Filter Bar */}
+      <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <Filter className="h-4 w-4 text-gray-400" />
+          <span className="text-xs font-bold text-gray-700">Filter Department:</span>
+          <select
+            value={selectedDeptFilter}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === 'ALL') {
+                searchParams.delete('department');
+              } else {
+                searchParams.set('department', val);
+              }
+              setSearchParams(searchParams);
+            }}
+            className="text-xs font-bold px-3 py-1.5 border border-gray-300 rounded-lg focus:ring-red-500 bg-white"
+          >
+            <option value="ALL">All Departments ({workers.length})</option>
+            {departments.map((d: any) => {
+              const count = workers.filter(w => w.department_id === d.id).length;
+              return (
+                <option key={d.id} value={d.id}>{d.name} ({count})</option>
+              );
+            })}
+          </select>
+        </div>
+
+        {selectedDeptFilter !== 'ALL' && (
+          <button
+            onClick={() => {
+              searchParams.delete('department');
+              setSearchParams(searchParams);
+            }}
+            className="text-xs font-bold text-red-600 hover:text-red-800"
+          >
+            Clear Filter
+          </button>
+        )}
+      </div>
+
       {/* Workers Table */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-        {loading ? (
+        {loading && workers.length === 0 ? (
           <div className="flex flex-col justify-center items-center py-24">
             <Loader2 className="animate-spin h-8 w-8 text-red-500 mb-2" />
             <p className="text-xs text-gray-400">Loading field staff...</p>
           </div>
-        ) : workers.length === 0 ? (
+        ) : filteredWorkers.length === 0 ? (
           <div className="p-16 text-center text-gray-500">
             <Users className="h-10 w-10 text-gray-300 mx-auto mb-2" />
-            <p className="font-semibold text-gray-700">No field workers registered</p>
-            <p className="text-xs text-gray-400 mt-1">Click "Add Field Worker" above to onboard field technicians.</p>
+            <p className="font-semibold text-gray-700">No field workers found</p>
+            <p className="text-xs text-gray-400 mt-1">
+              {selectedDeptFilter !== 'ALL' 
+                ? 'No workers assigned to this selected department.' 
+                : 'Click "Add Field Worker" above to onboard field technicians.'}
+            </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -172,11 +287,12 @@ export default function AdminWorkers() {
                   <th className="px-6 py-4 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Active Tasks</th>
                   <th className="px-6 py-4 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Completed</th>
                   <th className="px-6 py-4 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Duty Status</th>
-                  <th className="px-6 py-4 text-right text-[11px] font-bold text-gray-500 uppercase tracking-wider">Rating</th>
+                  <th className="px-6 py-4 text-left text-[11px] font-bold text-gray-500 uppercase tracking-wider">Rating</th>
+                  <th className="px-6 py-4 text-right text-[11px] font-bold text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-100">
-                {workers.map((worker) => (
+                {filteredWorkers.map((worker) => (
                   <tr key={worker.profile_id} className="hover:bg-gray-50/80 transition-colors">
                     {/* Worker Profile */}
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -239,10 +355,36 @@ export default function AdminWorkers() {
                     </td>
 
                     {/* Performance Rating */}
-                    <td className="px-6 py-4 whitespace-nowrap text-right">
+                    <td className="px-6 py-4 whitespace-nowrap">
                       <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-md">
                         {worker.performanceScore}% Score
                       </span>
+                    </td>
+
+                    {/* Actions: Edit/Reassign & Delete */}
+                    <td className="px-6 py-4 whitespace-nowrap text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => {
+                            setEditWorker(worker);
+                            setEditName(worker.full_name);
+                            setEditPhone(worker.phone_number || '');
+                            setEditDeptId(worker.department_id);
+                            setEditStatus(worker.status);
+                          }}
+                          className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
+                          title="Edit / Reassign Worker"
+                        >
+                          <Edit2 className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteWorker(worker)}
+                          className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
+                          title="Remove Worker"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -331,9 +473,95 @@ export default function AdminWorkers() {
                 <button 
                   type="submit" 
                   disabled={submitting}
-                  className="px-4 py-2 bg-gray-900 hover:bg-red-600 text-white text-xs font-bold rounded-lg transition-colors"
+                  className="px-4 py-2 bg-gray-900 hover:bg-red-600 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5"
                 >
+                  {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   Create Worker
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit / Reassign Worker Modal */}
+      {editWorker && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 space-y-4">
+            <h3 className="text-lg font-bold text-gray-900">Edit / Reassign Worker</h3>
+            <p className="text-xs text-gray-500">
+              Update worker profile, change duty status, or reassign to another municipal division.
+            </p>
+
+            <form onSubmit={handleEditWorker} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Full Name *</label>
+                <input 
+                  type="text" 
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Phone Number</label>
+                <input 
+                  type="tel" 
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Assigned Department (Reassign) *</label>
+                <select
+                  required
+                  value={editDeptId}
+                  onChange={(e) => setEditDeptId(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:ring-red-500"
+                >
+                  {departments.map((d: any) => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+                {editWorker.department_id !== editDeptId && (
+                  <p className="text-[11px] font-semibold text-blue-600 mt-1">
+                    Reassigning from {editWorker.department_name} to selected department.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">Duty Status</label>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:ring-red-500"
+                >
+                  <option value="AVAILABLE">🟢 Available (On Duty)</option>
+                  <option value="BUSY">🟡 Busy (Working on Task)</option>
+                  <option value="OFF_DUTY">⚪ Off Duty (Inactive)</option>
+                </select>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button 
+                  type="button" 
+                  onClick={() => setEditWorker(null)}
+                  className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={updating}
+                  className="px-4 py-2 bg-gray-900 hover:bg-red-600 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5"
+                >
+                  {updating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  Save Changes
                 </button>
               </div>
             </form>

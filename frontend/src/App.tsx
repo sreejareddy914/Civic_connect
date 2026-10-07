@@ -31,6 +31,7 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminIssueList from './pages/admin/AdminIssueList';
 import AdminIssueDetails from './pages/admin/AdminIssueDetails';
 import AdminDepartments from './pages/admin/AdminDepartments';
+import DepartmentDetails from './pages/admin/DepartmentDetails';
 import AdminSLA from './pages/admin/AdminSLA';
 import AdminMap from './pages/admin/AdminMap';
 import AdminHotspots from './pages/admin/AdminHotspots';
@@ -99,6 +100,7 @@ function App() {
             <Route path="/admin/issues" element={<AdminIssueList />} />
             <Route path="/admin/issues/:id" element={<AdminIssueDetails />} />
             <Route path="/admin/departments" element={<AdminDepartments />} />
+            <Route path="/admin/departments/:id" element={<DepartmentDetails />} />
             <Route path="/admin/workers" element={<AdminWorkers />} />
             <Route path="/admin/sla" element={<AdminSLA />} />
             <Route path="/admin/map" element={<AdminMap />} />
