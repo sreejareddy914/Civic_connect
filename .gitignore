@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Environment files and credentials (CRITICAL: never commit secrets)
+.env
+.env.*
+!.env.example
+*/.env
+*/.env.*
+!*/.env.example
+
+# Build outputs
+dist/
+*/dist/
+dist-ssr/
+*/dist-ssr/
+build/
+*/build/
+
+# Compilation maps and artifacts
+*.js.map
+*.d.ts.map
+
+# Temporary test uploads and runtime artifacts
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/result.txt
+backend/dummy.jpg
+backend/pixel.jpg
+backend/test_image.png
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS and Editor
+.DS_Store
+*/.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo

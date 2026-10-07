@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+uploads/*
+!uploads/.gitkeep
+*.js.map
+*.d.ts.map
+dummy.jpg
+pixel.jpg
+test_image.png
+result.txt
