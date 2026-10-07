@@ -216,7 +216,8 @@ export default function TrackIssues({ session }: { session: any }) {
                             if (window.confirm('Are you sure you want to delete this complaint? This cannot be undone.')) {
                               try {
                                 const token = (await supabase.auth.getSession()).data.session?.access_token;
-                                const res = await fetch(`http://localhost:3000/api/issues/${issue.id}`, {
+                                const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+                                const res = await fetch(`${apiUrl}/issues/${issue.id}`, {
                                   method: 'DELETE',
                                   headers: { 'Authorization': `Bearer ${token}` }
                                 });

@@ -6,6 +6,7 @@ import { AlertTriangle } from 'lucide-react';
 import ReportIssue from './pages/ReportIssue';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
+import AuthCallback from './pages/AuthCallback';
 import Dashboard from './pages/Dashboard';
 import TrackIssues from './pages/TrackIssues';
 import IssueDetails from './pages/IssueDetails';
@@ -64,6 +65,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/auth/callback" element={<AuthCallback />} />
           
           {/* Citizen Routes wrapped in Layout */}
           <Route element={<CitizenLayout session={session} />}>
@@ -107,7 +109,9 @@ function App() {
             <Route path="/admin/settings" element={<AdminSettings />} />
           </Route>
 
+          <Route path="/admin" element={<Navigate to="/admin/dashboard" replace />} />
           <Route path="/worker" element={<Navigate to="/worker/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Router>
     </InteractionProvider>
