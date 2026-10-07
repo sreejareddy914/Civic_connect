@@ -53,3 +53,11 @@ app.get('/api/health', (req, res) => {
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });
+
+app.get("/", (_req, res) => {
+  res.json({
+    status: "ok",
+    service: "CivicConnect Backend",
+    message: "Backend is running"
+  });
+});
